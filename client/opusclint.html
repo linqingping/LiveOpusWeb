@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Opus 音频播放</title>
+</head>
+<body>
+    <h2>Opus 音频播放测试</h2>
+    <p id="status">正在连接到音频服务器...</p>
+
+    <!-- 引入 opus-decoder -->
+    <script src="opus-decoder.min.js"></script>
+    <script>
+        let audioCtx;
+        let decoder;
+        let ws;
+
+        async function init() {
+            // 初始化 WebSocket
+            ws = new WebSocket('ws://192.168.70.89:8765');  // 请替换为你的服务器地址
+            ws.binaryType = "arraybuffer";
+
+            ws.onopen = function () {
+                console.log("WebSocket 连接成功");
+                document.getElementById("status").innerText = "WebSocket 连接成功，等待音频数据...";
+            };
+
+            ws.onmessage = async function (event) {
+                if (event.data === "END_OF_STREAM") {
+                    console.log("接收到音频流结束信号");
+                    return;
+                }
+
+                try {
+                    const opusData = new Uint8Array(event.data);
+                    const decodedAudio = decoder.decodeFrame(opusData,2880);
+
+                    // 将解码的 PCM 数据送入 AudioContext 播放
+                    playPCM(decodedAudio);
+                } catch (error) {
+                    console.error("解码 Opus 失败:", error);
+                }
+            };
+
+            ws.onerror = function (error) {
+                console.error("WebSocket 错误:", error);
+            };
+
+            ws.onclose = function () {
+                console.log("WebSocket 连接已关闭");
+            };
+
+            // 创建 Opus 解码器（16kHz 采样率，单声道）
+            decoder = new window["opus-decoder"].OpusDecoder({
+                sampleRate: 16000,
+                channels: 1
+            });
+
+            await decoder.ready;
+            console.log("Opus 解码器已就绪");
+        }
+
+        function playPCM({ channelData, sampleRate }) {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
+            }
+
+            const buffer = audioCtx.createBuffer(
+                channelData.length,
+                channelData[0].length,
+                sampleRate
+            );
+
+            for (let i = 0; i < channelData.length; i++) {
+                buffer.getChannelData(i).set(channelData[i]);
+            }
+
+            const source = audioCtx.createBufferSource();
+            source.buffer = buffer;
+            source.connect(audioCtx.destination);
+            source.start();
+        }
+
+        // 启动
+        init();
+    </script>
+</body>
+</html>
