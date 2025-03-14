@@ -4,10 +4,73 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Opus 音频播放</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .container {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+        h2 {
+            color: #333;
+        }
+        p {
+            color: #666;
+        }
+        #status {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: #f9f9f9;
+        }
+        .controls {
+            margin-top: 20px;
+        }
+        .controls input, .controls button {
+            padding: 10px;
+            margin: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .controls button {
+            background-color: #007bff;
+            color: white;
+            cursor: pointer;
+        }
+        .controls button:hover {
+            background-color: #0056b3;
+        }
+        #waveform {
+            margin-top: 20px;
+            width: 100%;
+            height: 100px;
+            display: none; /* 初始隐藏 */
+        }
+    </style>
 </head>
 <body>
-    <h2>Opus 音频播放测试</h2>
-    <p id="status">正在连接到音频服务器...</p>
+    <div class="container">
+        <h2>Opus 音频播放测试</h2>
+        <div class="controls">
+            <input type="text" id="wsUrl" placeholder="ws://服务器地址:端口" value="ws://192.168.70.89:8765">
+            <button onclick="start()">开始</button>
+            <button onclick="stop()">关闭</button>
+        </div>
+        <p id="status">请输入 WebSocket 服务器地址并点击开始。</p>
+        <canvas id="waveform"></canvas>
+    </div>
 
     <!-- 引入 opus-decoder -->
     <script src="opus-decoder.min.js"></script>
@@ -15,10 +78,24 @@
         let audioCtx;
         let decoder;
         let ws;
+        let canvasCtx;
+        let analyser;
+        let dataArray;
+        let bufferLength;
 
-        async function init() {
+        async function start() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+            const wsUrl = document.getElementById("wsUrl").value;
+            if (!wsUrl) {
+                alert("请输入 WebSocket 服务器地址");
+                return;
+            }
+
             // 初始化 WebSocket
-            ws = new WebSocket('ws://192.168.70.89:8765');  // 请替换为你的服务器地址
+            ws = new WebSocket(wsUrl);
             ws.binaryType = "arraybuffer";
 
             ws.onopen = function () {
@@ -27,7 +104,8 @@
             };
 
             ws.onmessage = async function (event) {
-                console.log("接收数据:",typeof event.data);
+                console.log("接收数据:", typeof event.data);
+                document.getElementById("status").innerText = "音频数据接收播放中...";
                 if (typeof event.data === "string" && event.data === "END_OF_STREAM") {
                     document.getElementById("status").innerText = "接收到音频流结束信号，WebSocket断开...";
                     console.log("接收到音频流结束信号");
@@ -49,10 +127,13 @@
 
             ws.onerror = function (error) {
                 console.error("WebSocket 错误:", error);
+                document.getElementById("status").innerText = "WebSocket 错误，请检查控制台日志。";
             };
 
             ws.onclose = function () {
                 console.log("WebSocket 连接已关闭");
+                document.getElementById("status").innerText = "WebSocket 连接已关闭。";
+                document.getElementById("waveform").style.display = "none"; // 隐藏波形画布
             };
 
             // 创建 Opus 解码器（16kHz 采样率，单声道）
@@ -63,6 +144,30 @@
 
             await decoder.ready;
             console.log("Opus 解码器已就绪");
+
+            // 初始化音频上下文和分析器
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 2048;
+            bufferLength = analyser.frequencyBinCount;
+            dataArray = new Uint8Array(bufferLength);
+
+            // 初始化画布上下文
+            const canvas = document.getElementById("waveform");
+            canvasCtx = canvas.getContext("2d");
+            canvas.style.display = "block"; // 显示波形画布
+            drawWaveform();
+        }
+
+        function stop() {
+            if (ws) {
+                ws.close();
+                ws = null;
+                document.getElementById("status").innerText = "WebSocket 连接已手动关闭。";
+                document.getElementById("waveform").style.display = "none"; // 隐藏波形画布
+            }
         }
 
         function playPCM(decodedAudio) {
@@ -84,15 +189,48 @@
 
             const source = audioCtx.createBufferSource();
             source.buffer = buffer;
-            source.connect(audioCtx.destination);
+            source.connect(analyser);
+            analyser.connect(audioCtx.destination);
 
             // 确保音频播放的平滑过渡
             const currentTime = audioCtx.currentTime;
             source.start(currentTime);
         }
 
-        // 启动
-        init();
+        function drawWaveform() {
+            requestAnimationFrame(drawWaveform);
+
+            analyser.getByteTimeDomainData(dataArray);
+
+            canvasCtx.clearRect(0, 0, canvasCtx.canvas.width, canvasCtx.canvas.height);
+
+            canvasCtx.lineWidth = 2;
+            const gradient = canvasCtx.createLinearGradient(0, 0, canvasCtx.canvas.width, 0);
+            gradient.addColorStop(0, 'rgb(0, 123, 255)');
+            gradient.addColorStop(1, 'rgb(0, 255, 123)');
+            canvasCtx.strokeStyle = gradient;
+
+            canvasCtx.beginPath();
+
+            const sliceWidth = canvasCtx.canvas.width * 1.0 / bufferLength;
+            let x = 0;
+
+            for (let i = 0; i < bufferLength; i++) {
+                const v = dataArray[i] / 128.0;
+                const y = v * canvasCtx.canvas.height / 2;
+
+                if (i === 0) {
+                    canvasCtx.moveTo(x, y);
+                } else {
+                    canvasCtx.lineTo(x, y);
+                }
+
+                x += sliceWidth;
+            }
+
+            canvasCtx.lineTo(canvasCtx.canvas.width, canvasCtx.canvas.height / 2);
+            canvasCtx.stroke();
+        }
     </script>
 </body>
 </html>
