@@ -14,7 +14,7 @@ async def send_opus_data(websocket):
         print(f"Sending {len(opus_datas)} bytes")
         await websocket.send(opus_data)
         await asyncio.sleep(0.06)  # 控制发送速率，60ms per frame
-    await websocket.send(b'END_OF_STREAM')  # 发送结束标志
+    await websocket.send('END_OF_STREAM')  # 发送结束标志
 
 def wav_to_opus_data(wav_file_path):
     # 使用pydub加载PCM文件

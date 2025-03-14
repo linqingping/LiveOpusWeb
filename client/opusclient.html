@@ -27,17 +27,21 @@
             };
 
             ws.onmessage = async function (event) {
-                if (event.data === "END_OF_STREAM") {
+                console.log("接收数据:",typeof event.data);
+                if (typeof event.data === "string" && event.data === "END_OF_STREAM") {
+                    document.getElementById("status").innerText = "接收到音频流结束信号，WebSocket断开...";
                     console.log("接收到音频流结束信号");
+                    ws.close(); // 主动关闭 WebSocket 连接
                     return;
                 }
-
                 try {
                     const opusData = new Uint8Array(event.data);
-                    const decodedAudio = decoder.decodeFrame(opusData,2880);
-
-                    // 将解码的 PCM 数据送入 AudioContext 播放
-                    playPCM(decodedAudio);
+                    const decodedAudio = decoder.decodeFrame(opusData);
+                    if (decodedAudio && decodedAudio.channelData && decodedAudio.channelData.length > 0) {
+                        playPCM(decodedAudio);
+                    } else {
+                        console.warn("解码后的音频数据无效");
+                    }
                 } catch (error) {
                     console.error("解码 Opus 失败:", error);
                 }
@@ -61,7 +65,9 @@
             console.log("Opus 解码器已就绪");
         }
 
-        function playPCM({ channelData, sampleRate }) {
+        function playPCM(decodedAudio) {
+            const { channelData, sampleRate } = decodedAudio;
+
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
             }
@@ -79,7 +85,10 @@
             const source = audioCtx.createBufferSource();
             source.buffer = buffer;
             source.connect(audioCtx.destination);
-            source.start();
+
+            // 确保音频播放的平滑过渡
+            const currentTime = audioCtx.currentTime;
+            source.start(currentTime);
         }
 
         // 启动
