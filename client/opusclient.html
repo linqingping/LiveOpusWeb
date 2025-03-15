@@ -3,234 +3,379 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Opus 音频播放</title>
+    <title>Opus 音频实时播放系统</title>
     <style>
         body {
-            font-family: Arial, sans-serif;
-            background-color: #f0f0f0;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background-color: #f5f5f5;
             margin: 0;
             padding: 0;
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100vh;
+            min-height: 100vh;
         }
+
         .container {
-            background-color: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            background: #ffffff;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            width: 90%;
+            max-width: 800px;
             text-align: center;
         }
+
         h2 {
-            color: #333;
+            color: #2c3e50;
+            margin-bottom: 1.5rem;
+            font-size: 1.8em;
         }
-        p {
-            color: #666;
-        }
+
         #status {
-            margin-top: 20px;
-            padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            background-color: #f9f9f9;
+            padding: 1rem;
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            margin: 1.5rem 0;
+            color: #495057;
+            font-size: 0.95em;
+            min-height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
+
         .controls {
-            margin-top: 20px;
+            display: grid;
+            grid-template-columns: 1fr auto auto;
+            gap: 1rem;
+            margin: 2rem 0;
         }
-        .controls input, .controls button {
-            padding: 10px;
-            margin: 5px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-        }
-        .controls button {
-            background-color: #007bff;
-            color: white;
-            cursor: pointer;
-        }
-        .controls button:hover {
-            background-color: #0056b3;
-        }
-        #waveform {
-            margin-top: 20px;
+
+        #wsUrl {
+            padding: 0.8rem;
+            border: 2px solid #007bff;
+            border-radius: 6px;
+            font-size: 1em;
             width: 100%;
-            height: 100px;
-            display: none; /* 初始隐藏 */
+            transition: border-color 0.3s ease;
+        }
+
+        #wsUrl:focus {
+            outline: none;
+            border-color: #0056b3;
+        }
+
+        button {
+            padding: 0.8rem 1.5rem;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: 500;
+            transition: transform 0.2s ease, opacity 0.2s ease;
+        }
+
+        button:hover {
+            transform: translateY(-1px);
+            opacity: 0.9;
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        #startBtn {
+            background: #007bff;
+            color: white;
+        }
+
+        #stopBtn {
+            background: #dc3545;
+            color: white;
+        }
+
+        #waveform {
+            margin-top: 2rem;
+            width: 100%;
+            height: 150px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .stats {
+            margin-top: 1.5rem;
+            color: #6c757d;
+            font-size: 0.9em;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>Opus 音频播放测试</h2>
+        <h2>高保真 Opus 音频流播放器</h2>
+        
         <div class="controls">
-            <input type="text" id="wsUrl" placeholder="ws://服务器地址:端口" value="ws://192.168.70.89:8765">
-            <button onclick="start()">开始</button>
-            <button onclick="stop()">关闭</button>
+            <input type="url" id="wsUrl" placeholder="wss://your-audio-server.com/stream" 
+                   value="ws://192.168.70.89:8765">
+            <button id="startBtn" onclick="start()">▶ 开始播放</button>
+            <button id="stopBtn" onclick="stop()">⏹ 停止播放</button>
         </div>
-        <p id="status">请输入 WebSocket 服务器地址并点击开始。</p>
+
+        <div id="status">等待连接初始化...</div>
+
         <canvas id="waveform"></canvas>
+
+        <div class="stats">
+            <span id="latency">延迟: -- ms</span> • 
+            <span id="buffer">缓冲: --%</span> • 
+            <span id="bitrate">码率: -- kbps</span>
+        </div>
     </div>
 
-    <!-- 引入 opus-decoder -->
+    <!-- Opus 解码器 -->
     <script src="opus-decoder.min.js"></script>
+
     <script>
-        let audioCtx;
-        let decoder;
-        let ws;
-        let canvasCtx;
-        let analyser;
-        let dataArray;
-        let bufferLength;
-
-        async function start() {
-            if (ws) {
-                ws.close();
-                ws = null;
+        // 音频处理核心模块
+        class AudioProcessor {
+            constructor() {
+                this.audioContext = null;
+                this.decoder = null;
+                this.websocket = null;
+                this.analyser = null;
+                this.canvasContext = null;
+                this.isPlaying = false;
+                this.bufferSize = 9600;  // 600ms 缓冲
+                this.audioQueue = [];
+                this.stats = {
+                    startTime: 0,
+                    bytesReceived: 0,
+                    packets: 0
+                };
             }
-            const wsUrl = document.getElementById("wsUrl").value;
-            if (!wsUrl) {
-                alert("请输入 WebSocket 服务器地址");
-                return;
-            }
 
-            // 初始化 WebSocket
-            ws = new WebSocket(wsUrl);
-            ws.binaryType = "arraybuffer";
-
-            ws.onopen = function () {
-                console.log("WebSocket 连接成功");
-                document.getElementById("status").innerText = "WebSocket 连接成功，等待音频数据...";
-            };
-
-            ws.onmessage = async function (event) {
-                console.log("接收数据:", typeof event.data);
-                document.getElementById("status").innerText = "音频数据接收播放中...";
-                if (typeof event.data === "string" && event.data === "END_OF_STREAM") {
-                    document.getElementById("status").innerText = "接收到音频流结束信号，WebSocket断开...";
-                    console.log("接收到音频流结束信号");
-                    ws.close(); // 主动关闭 WebSocket 连接
-                    return;
-                }
+            async initialize() {
                 try {
-                    const opusData = new Uint8Array(event.data);
-                    const decodedAudio = decoder.decodeFrame(opusData);
-                    if (decodedAudio && decodedAudio.channelData && decodedAudio.channelData.length > 0) {
-                        playPCM(decodedAudio);
-                    } else {
-                        console.warn("解码后的音频数据无效");
+                    // 初始化解码器
+                    this.decoder = new window["opus-decoder"].OpusDecoder({
+                        sampleRate: 16000,
+                        channels: 1
+                    });
+                    await this.decoder.ready;
+
+                    // 创建音频上下文
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                        sampleRate: 16000,
+                        latencyHint: 'interactive'
+                    });
+
+                    // 配置音频分析器
+                    this.analyser = this.audioContext.createAnalyser();
+                    this.analyser.fftSize = 2048;
+                    this.analyser.smoothingTimeConstant = 0.8;
+
+                    // 初始化波形绘制
+                    const canvas = document.getElementById('waveform');
+                    this.canvasContext = canvas.getContext('2d');
+                    canvas.width = canvas.offsetWidth;
+                    canvas.height = canvas.offsetHeight;
+                    
+                    return true;
+                } catch (error) {
+                    console.error('初始化失败:', error);
+                    return false;
+                }
+            }
+
+            connectWebSocket(url) {
+                return new Promise((resolve, reject) => {
+                    this.websocket = new WebSocket(url);
+                    this.websocket.binaryType = 'arraybuffer';
+
+                    this.websocket.onopen = () => {
+                        this.stats.startTime = Date.now();
+                        resolve();
+                    };
+
+                    this.websocket.onerror = (error) => reject(error);
+                    
+                    this.websocket.onmessage = async (event) => {
+                        this.processAudioData(event.data);
+                    };
+                });
+            }
+
+            async processAudioData(data) {
+                try {
+                    // 解码 Opus 数据
+                    const decoded = await this.decoder.decodeFrame(new Uint8Array(data));
+                    
+                    if (decoded?.channelData?.[0]) {
+                        // 将解码后的 PCM 数据加入队列
+                        this.audioQueue.push(...decoded.channelData[0]);
+                        
+                        // 更新统计信息
+                        this.stats.bytesReceived += data.byteLength;
+                        this.stats.packets++;
+                        
+                        // 检查缓冲状态
+                        if (!this.isPlaying && this.audioQueue.length >= this.bufferSize) {
+                            this.startPlayback();
+                        }
+                        
+                        this.updateStats();
+                        this.drawWaveform();
                     }
                 } catch (error) {
-                    console.error("解码 Opus 失败:", error);
+                    console.error('音频处理错误:', error);
                 }
-            };
-
-            ws.onerror = function (error) {
-                console.error("WebSocket 错误:", error);
-                document.getElementById("status").innerText = "WebSocket 错误，请检查控制台日志。";
-            };
-
-            ws.onclose = function () {
-                console.log("WebSocket 连接已关闭");
-                document.getElementById("status").innerText = "WebSocket 连接已关闭。";
-                document.getElementById("waveform").style.display = "none"; // 隐藏波形画布
-            };
-
-            // 创建 Opus 解码器（16kHz 采样率，单声道）
-            decoder = new window["opus-decoder"].OpusDecoder({
-                sampleRate: 16000,
-                channels: 1
-            });
-
-            await decoder.ready;
-            console.log("Opus 解码器已就绪");
-
-            // 初始化音频上下文和分析器
-            if (!audioCtx) {
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             }
-            analyser = audioCtx.createAnalyser();
-            analyser.fftSize = 2048;
-            bufferLength = analyser.frequencyBinCount;
-            dataArray = new Uint8Array(bufferLength);
 
-            // 初始化画布上下文
-            const canvas = document.getElementById("waveform");
-            canvasCtx = canvas.getContext("2d");
-            canvas.style.display = "block"; // 显示波形画布
-            drawWaveform();
+            startPlayback() {
+                this.isPlaying = true;
+                const source = this.audioContext.createBufferSource();
+                
+                const buffer = this.audioContext.createBuffer(
+                    1,
+                    this.bufferSize,
+                    this.audioContext.sampleRate
+                );
+                
+                buffer.copyToChannel(
+                    new Float32Array(this.audioQueue.splice(0, this.bufferSize)),
+                    0
+                );
+
+                source.buffer = buffer;
+                source.connect(this.analyser);
+                this.analyser.connect(this.audioContext.destination);
+                
+                source.start();
+                source.onended = () => {
+                    if (this.audioQueue.length >= this.bufferSize) {
+                        this.startPlayback();
+                    } else {
+                        this.isPlaying = false;
+                    }
+                };
+            }
+
+            drawWaveform() {
+                const bufferLength = this.analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+                this.analyser.getByteTimeDomainData(dataArray);
+
+                const canvas = this.canvasContext.canvas;
+                this.canvasContext.clearRect(0, 0, canvas.width, canvas.height);
+                
+                // 绘制渐变背景
+                const gradient = this.canvasContext.createLinearGradient(0, 0, canvas.width, 0);
+                gradient.addColorStop(0, '#007bff');
+                gradient.addColorStop(1, '#00ff88');
+                this.canvasContext.strokeStyle = gradient;
+                this.canvasContext.lineWidth = 2;
+
+                this.canvasContext.beginPath();
+                const sliceWidth = canvas.width / bufferLength;
+                let x = 0;
+
+                for (let i = 0; i < bufferLength; i++) {
+                    const v = dataArray[i] / 128.0;
+                    const y = v * canvas.height / 2;
+
+                    if (i === 0) {
+                        this.canvasContext.moveTo(x, y);
+                    } else {
+                        this.canvasContext.lineTo(x, y);
+                    }
+                    x += sliceWidth;
+                }
+
+                this.canvasContext.stroke();
+            }
+
+            updateStats() {
+                // 计算实时统计信息
+                const elapsed = (Date.now() - this.stats.startTime) / 1000;
+                const bitrate = (this.stats.bytesReceived * 8) / elapsed / 1000;
+                const bufferLevel = (this.audioQueue.length / this.bufferSize * 100).toFixed(1);
+                
+                document.getElementById('latency').textContent = 
+                    `延迟: ${Math.round(this.audioQueue.length / 16)} ms`;
+                document.getElementById('buffer').textContent = 
+                    `缓冲: ${bufferLevel}%`;
+                document.getElementById('bitrate').textContent = 
+                    `码率: ${bitrate.toFixed(1)} kbps`;
+            }
+
+            cleanup() {
+                if (this.websocket) {
+                    this.websocket.close();
+                    this.websocket = null;
+                }
+                if (this.audioContext) {
+                    this.audioContext.close();
+                    this.audioContext = null;
+                }
+                this.audioQueue = [];
+                this.isPlaying = false;
+            }
+        }
+
+        // 全局音频处理器实例
+        const audioProcessor = new AudioProcessor();
+
+        // UI 控制函数
+        async function start() {
+            try {
+                const url = document.getElementById('wsUrl').value;
+                if (!url) {
+                    alert('请输入有效的 WebSocket 地址');
+                    return;
+                }
+
+                document.getElementById('status').textContent = '正在初始化...';
+                document.getElementById('waveform').style.display = 'block';
+                
+                if (!await audioProcessor.initialize()) {
+                    throw new Error('音频系统初始化失败');
+                }
+
+                document.getElementById('status').textContent = '正在连接服务器...';
+                await audioProcessor.connectWebSocket(url);
+                
+                document.getElementById('status').textContent = '实时音频流传输中';
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+            } catch (error) {
+                console.error('启动失败:', error);
+                document.getElementById('status').textContent = `错误: ${error.message}`;
+                audioProcessor.cleanup();
+            }
         }
 
         function stop() {
-            if (ws) {
-                ws.close();
-                ws = null;
-                document.getElementById("status").innerText = "WebSocket 连接已手动关闭。";
-                document.getElementById("waveform").style.display = "none"; // 隐藏波形画布
-            }
+            audioProcessor.cleanup();
+            document.getElementById('status').textContent = '连接已关闭';
+            document.getElementById('waveform').style.display = 'none';
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            
+            // 重置统计信息
+            document.querySelectorAll('.stats span').forEach(span => {
+                span.textContent = span.textContent.replace(/: .+/, ': --');
+            });
         }
 
-        function playPCM(decodedAudio) {
-            const { channelData, sampleRate } = decodedAudio;
-
-            if (!audioCtx) {
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
-            }
-
-            const buffer = audioCtx.createBuffer(
-                channelData.length,
-                channelData[0].length,
-                sampleRate
-            );
-
-            for (let i = 0; i < channelData.length; i++) {
-                buffer.getChannelData(i).set(channelData[i]);
-            }
-
-            const source = audioCtx.createBufferSource();
-            source.buffer = buffer;
-            source.connect(analyser);
-            analyser.connect(audioCtx.destination);
-
-            // 确保音频播放的平滑过渡
-            const currentTime = audioCtx.currentTime;
-            source.start(currentTime);
-        }
-
-        function drawWaveform() {
-            requestAnimationFrame(drawWaveform);
-
-            analyser.getByteTimeDomainData(dataArray);
-
-            canvasCtx.clearRect(0, 0, canvasCtx.canvas.width, canvasCtx.canvas.height);
-
-            canvasCtx.lineWidth = 2;
-            const gradient = canvasCtx.createLinearGradient(0, 0, canvasCtx.canvas.width, 0);
-            gradient.addColorStop(0, 'rgb(0, 123, 255)');
-            gradient.addColorStop(1, 'rgb(0, 255, 123)');
-            canvasCtx.strokeStyle = gradient;
-
-            canvasCtx.beginPath();
-
-            const sliceWidth = canvasCtx.canvas.width * 1.0 / bufferLength;
-            let x = 0;
-
-            for (let i = 0; i < bufferLength; i++) {
-                const v = dataArray[i] / 128.0;
-                const y = v * canvasCtx.canvas.height / 2;
-
-                if (i === 0) {
-                    canvasCtx.moveTo(x, y);
-                } else {
-                    canvasCtx.lineTo(x, y);
-                }
-
-                x += sliceWidth;
-            }
-
-            canvasCtx.lineTo(canvasCtx.canvas.width, canvasCtx.canvas.height / 2);
-            canvasCtx.stroke();
-        }
+        // 窗口尺寸变化处理
+        window.addEventListener('resize', () => {
+            const canvas = document.getElementById('waveform');
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+        });
     </script>
 </body>
 </html>
+

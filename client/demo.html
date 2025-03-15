@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <!-- 设置视口，确保在移动设备上正常显示 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Opus音频流播放器</title>
+</head>
+<body>
+    <div>
+        <h2>Opus音频流播放器</h2>
+        <!-- 输入框用于填写WebSocket服务器地址，默认地址为ws://192.168.70.89:8765 -->
+        <div>
+            <input type="url" id="wsUrl" placeholder="wss://服务器地址" value="ws://192.168.70.89:8765">
+            <!-- 开始播放按钮，点击调用start()函数 -->
+            <button id="startBtn" onclick="start()">▶ 开始播放</button>
+            <!-- 停止播放按钮，点击调用stop()函数 -->
+            <button id="stopBtn" onclick="stop()">⏹ 停止播放</button>
+        </div>
+        <!-- 状态显示区域 -->
+        <div id="status">等待连接初始化...</div>
+    </div>
+
+    <!-- 引入本地的 opus-decoder.min.js 文件，需保证该文件在同一目录下 -->
+    <script src="opus-decoder.min.js"></script>
+
+    <script>
+        // 定义一个AudioProcessor类，用于处理音频解码和播放
+        class AudioProcessor {
+            constructor() {
+                this.audioContext = null;   // Web Audio API的音频上下文
+                this.decoder = null;        // Opus解码器实例
+                this.websocket = null;      // WebSocket客户端实例
+                this.isPlaying = false;     // 标记当前是否正在播放
+                this.bufferSize = 9600;     // 定义播放所需的缓冲区大小（样本数量）
+                this.audioQueue = [];       // 用于存储累积的PCM音频样本数据
+                this.currentSource = null;  // 当前正在播放的音频源节点
+            }
+
+            // 初始化音频系统：Opus解码器和AudioContext
+            async initialize() {
+                try {
+                    // 创建 Opus 解码器实例，设置采样率为16000，单声道
+                    this.decoder = new window["opus-decoder"].OpusDecoder({
+                        sampleRate: 16000,
+                        channels: 1
+                    });
+                    // 等待解码器内部的WebAssembly模块编译完成
+                    await this.decoder.ready;
+
+                    // 创建音频上下文，设置采样率为16000，latencyHint为'interactive'
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                        sampleRate: 16000,
+                        latencyHint: 'interactive'
+                    });
+
+                    return true; // 初始化成功返回true
+                } catch (error) {
+                    console.error('初始化失败:', error);
+                    return false;
+                }
+            }
+
+            // 建立 WebSocket 连接，并返回一个Promise，在连接成功后解析
+            connectWebSocket(url) {
+                return new Promise((resolve, reject) => {
+                    // 创建一个新的 WebSocket 连接
+                    this.websocket = new WebSocket(url);
+                    // 设置接收二进制数据为 ArrayBuffer 格式
+                    this.websocket.binaryType = 'arraybuffer';
+
+                    // 连接成功后回调
+                    this.websocket.onopen = () => {
+                        console.log('WebSocket连接已建立');
+                        resolve();
+                    };
+
+                    // 出现错误时回调
+                    this.websocket.onerror = (error) => {
+                        console.error('WebSocket错误:', error);
+                        reject(error);
+                    };
+
+                    // 当接收到消息时，处理音频数据
+                    this.websocket.onmessage = async (event) => {
+                        // 如果收到结束信号，则清理资源
+                        if (typeof event.data === 'string' && event.data === 'END_OF_STREAM') {
+                            console.log('收到流结束信号');
+                            this.cleanup();
+                            document.getElementById('status').textContent = '音频播放完成';
+                            return;
+                        }
+                        // 处理接收到的音频数据
+                        await this.processAudioData(event.data);
+                    };
+                });
+            }
+
+            // 处理接收到的音频数据
+            async processAudioData(data) {
+                try {
+                    // 调用解码器对数据进行解码，返回一个对象，包含解码后的channelData
+                    const decoded = await this.decoder.decodeFrame(new Uint8Array(data));
+                    
+                    // 如果解码结果有效，则将第一通道的PCM数据追加到音频队列中
+                    if (decoded?.channelData?.[0]) {
+                        this.audioQueue.push(...decoded.channelData[0]);
+                        
+                        // 如果当前没有播放且队列中数据达到bufferSize，开始播放
+                        if (!this.isPlaying && this.audioQueue.length >= this.bufferSize) {
+                            this.startPlayback();
+                        }
+                    }
+                } catch (error) {
+                    console.error('音频处理错误:', error);
+                }
+            }
+
+            // 开始播放音频队列中的数据
+            startPlayback() {
+                this.isPlaying = true;
+                // 创建一个新的音频源节点
+                this.currentSource = this.audioContext.createBufferSource();
+                
+                // 创建一个音频缓冲区，大小为 bufferSize，采样率与AudioContext一致
+                const buffer = this.audioContext.createBuffer(
+                    1,
+                    this.bufferSize,
+                    this.audioContext.sampleRate
+                );
+                
+                // 将音频队列中的前 bufferSize 个样本提取出来填充到缓冲区中
+                buffer.copyToChannel(
+                    new Float32Array(this.audioQueue.splice(0, this.bufferSize)),
+                    0
+                );
+
+                // 设置音频源节点的缓冲区，并连接到扬声器输出
+                this.currentSource.buffer = buffer;
+                this.currentSource.connect(this.audioContext.destination);
+                
+                // 启动播放
+                this.currentSource.start();
+                // 播放结束时的回调
+                this.currentSource.onended = () => {
+                    // 如果队列中还有足够数据，继续播放
+                    if (this.audioQueue.length >= this.bufferSize) {
+                        this.startPlayback();
+                    } else {
+                        this.isPlaying = false;
+                        this.currentSource = null;
+                    }
+                };
+            }
+
+            // 清理资源：停止播放，关闭WebSocket和音频上下文，并清空队列
+            cleanup() {
+                if (this.currentSource) {
+                    this.currentSource.stop();
+                    this.currentSource.disconnect();
+                    this.currentSource = null;
+                }
+
+                if (this.websocket) {
+                    this.websocket.close();
+                    this.websocket = null;
+                }
+
+                if (this.audioContext) {
+                    this.audioContext.close();
+                    this.audioContext = null;
+                }
+
+                this.audioQueue = [];
+                this.isPlaying = false;
+
+                // 更新按钮状态（假设按钮存在）
+                document.getElementById('startBtn').disabled = false;
+                document.getElementById('stopBtn').disabled = true;
+            }
+        }
+
+        // 创建一个全局的 AudioProcessor 实例
+        const audioProcessor = new AudioProcessor();
+
+        // 开始函数：初始化系统，连接WebSocket
+        async function start() {
+            try {
+                const url = document.getElementById('wsUrl').value;
+                if (!url) {
+                    alert('请输入有效的WebSocket地址');
+                    return;
+                }
+
+                document.getElementById('status').textContent = '正在初始化...';
+                document.getElementById('startBtn').disabled = true;
+                
+                // 初始化音频系统
+                if (!await audioProcessor.initialize()) {
+                    throw new Error('音频系统初始化失败');
+                }
+
+                document.getElementById('status').textContent = '正在连接服务器...';
+                // 连接WebSocket服务器
+                await audioProcessor.connectWebSocket(url);
+                
+                document.getElementById('status').textContent = '实时音频流传输中';
+                document.getElementById('stopBtn').disabled = false;
+            } catch (error) {
+                console.error('启动失败:', error);
+                document.getElementById('status').textContent = `错误: ${error.message}`;
+                audioProcessor.cleanup();
+                document.getElementById('startBtn').disabled = false;
+            }
+        }
+
+        // 停止播放函数：清理所有资源
+        function stop() {
+            audioProcessor.cleanup();
+            document.getElementById('status').textContent = '连接已手动关闭';
+        }
+    </script>
+</body>
+</html>
